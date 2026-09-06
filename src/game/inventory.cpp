@@ -3523,32 +3523,14 @@ namespace trinity::game
         const uintptr_t clientC = ResolveClientContainer();
         if (clientC)
         {
-            // The party-container order is a direct identity signal and is
-            // more reliable than equipped TypeIDs during a character swap or
-            // when Oongka is carrying a newly introduced item.
-            uintptr_t sub = 0, holder = 0, arr = 0;
-            uint32_t count = 0;
-            if (ReadPtr(clientC + kOff_Container_Sub, &sub) && sub >= kMinPointer &&
-                ReadPtr(sub + kOff_Sub_Holder, &holder) && holder >= kMinPointer &&
-                ReadPtr(holder + 0x18, &arr) && arr >= kMinPointer &&
-                Read32(holder + 0x20, &count) && count > 0 && count <= 64)
-            {
-                for (uint32_t i = 0; i < count && i < 3; ++i)
-                {
-                    uintptr_t partyC = 0;
-                    if (ReadPtr(arr + static_cast<uintptr_t>(i) * 8, &partyC) &&
-                        partyC == clientC)
-                        return PreferPartyCharacterIndex(static_cast<int>(i), -1);
-                }
-            }
             const int ident = IdentifyCharacterFromEquip(clientC);
-            if (ident >= 0) return PreferPartyCharacterIndex(-1, ident);
+            if (ident >= 0) return ident;
         }
         const uintptr_t liveComp = Dye::HookedClientComp();
         if (liveComp)
         {
             const int ident = IdentifyCharacterIdentity(liveComp);
-            if (ident >= 0) return PreferPartyCharacterIndex(-1, ident);
+            if (ident >= 0) return ident;
         }
         return -1;
     }
@@ -3590,36 +3572,16 @@ namespace trinity::game
             if (candCount < 64) candidates[candCount++] = c;
         };
 
-        // 1. Container manager array
-        if (clientC)
-        {
-            uintptr_t sub = 0, holder = 0;
-            if (ReadPtr(clientC + kOff_Container_Sub, &sub) && sub >= kMinPointer &&
-                ReadPtr(sub + kOff_Sub_Holder, &holder) && holder >= kMinPointer)
-            {
-                uintptr_t arr = 0;
-                uint32_t count = 0;
-                if (ReadPtr(holder + 0x18, &arr) && arr >= kMinPointer &&
-                    Read32(holder + 0x20, &count) && count > 1 && count <= 64)
-                {
-                    for (uint32_t i = 0; i < count; ++i)
-                    {
-                        uintptr_t c = 0;
-                        if (ReadPtr(arr + static_cast<uintptr_t>(i) * 8, &c) && c >= kMinPointer)
-                            addCand(c);
-                    }
-                }
-            }
-        }
-
-        // 2. Commit-hook snapshot candidates
+        // 1. Commit-hook snapshot candidates
         Candidate snap[kMaxCandidates] = {};
         const int snapN = SnapshotCandidates(snap);
         for (int i = 0; i < snapN; ++i)
             addCand(snap[i].container);
 
-        // 3. Active world party actors (all protagonists, any slot)
-        for (int i = 0; i < 3; ++i)
+        // 2. Active world protagonists. Player tracking filters vehicle/pet
+        // entries before applying its three-character limit.
+        const int trackedCount = Player::GetTrackedPlayerCount();
+        for (int i = 0; i < trackedCount; ++i)
         {
             const uintptr_t act = Player::GetActor(i);
             if (act) addCand(act);
@@ -3630,28 +3592,6 @@ namespace trinity::game
         {
             if (IdentifyCharacterFromEquip(candidates[i]) == index)
                 addMatch(candidates[i]);
-        }
-
-        // Fallback: If no candidate positively identified by gear signature,
-        // use the companion's direct index in the party container manager array!
-        if (n == 0 && clientC)
-        {
-            uintptr_t sub = 0, holder = 0;
-            if (ReadPtr(clientC + kOff_Container_Sub, &sub) && sub >= kMinPointer &&
-                ReadPtr(sub + kOff_Sub_Holder, &holder) && holder >= kMinPointer)
-            {
-                uintptr_t arr = 0;
-                uint32_t count = 0;
-                if (ReadPtr(holder + 0x18, &arr) && arr >= kMinPointer &&
-                    Read32(holder + 0x20, &count) && count > static_cast<uint32_t>(index))
-                {
-                    uintptr_t directC = 0;
-                    if (ReadPtr(arr + static_cast<uintptr_t>(index) * 8, &directC) && directC >= kMinPointer)
-                    {
-                        addMatch(directC);
-                    }
-                }
-            }
         }
 
         return n;
@@ -4249,11 +4189,21 @@ namespace trinity::game
         std::vector<Group> g_catalog;
         bool g_catalogBuilt = false;
         int  g_catalogDiagState = 0;
+        uint64_t g_catalogLastResolverAttemptMs = GetTickCount64();
+        constexpr uint64_t kCatalogResolverRetryMs = 1000;
 
         void BuildCatalog()
         {
             if (g_catalogBuilt) return;
             EnsureTablesResolved();
+            const uint64_t now = GetTickCount64();
+            if (ShouldAttemptCatalogResolve(g_itemTableGlobal != 0, now,
+                                            g_catalogLastResolverAttemptMs,
+                                            kCatalogResolverRetryMs))
+            {
+                g_catalogLastResolverAttemptMs = now;
+                g_itemTableGlobal = FindTableGlobal(kStr_ItemInfoTable);
+            }
             if (!g_itemTableGlobal)
             {
                 if (g_catalogDiagState != 1)
