@@ -3578,13 +3578,15 @@ namespace trinity::game
         for (int i = 0; i < snapN; ++i)
             addCand(snap[i].container);
 
-        // 2. Active world protagonists. Player tracking filters vehicle/pet
-        // entries before applying its three-character limit.
+        // 2. Active world protagonist containers. Player tracking filters
+        // vehicle/pet entries before applying its three-character limit. The
+        // tracked owner is the inventory container; the actor is only the
+        // gameplay subobject and cannot be walked through the inventory path.
         const int trackedCount = Player::GetTrackedPlayerCount();
         for (int i = 0; i < trackedCount; ++i)
         {
-            const uintptr_t act = Player::GetActor(i);
-            if (act) addCand(act);
+            const uintptr_t owner = Player::GetOwner(i);
+            if (owner) addCand(owner);
         }
 
         // Accept only candidates whose equipped gear identifies as `index`
@@ -3605,13 +3607,13 @@ namespace trinity::game
         const int n = CharacterAddrs(index, matches, 16);
         if (n > 0) return matches[0];
 
-        // Fallback: the tracked party actor for a companion. Its gear carried
-        // nothing recognizable anywhere else; companions were always resolved
-        // this way last.
+        // Fallback: the tracked party container for a companion. Its gear may
+        // carry nothing recognizable yet, so use the owner resolved by the
+        // character manager rather than the actor subobject.
         if (index > 0 && index < 3)
         {
-            const uintptr_t partyAct = Player::GetActor(index);
-            if (partyAct >= kMinPointer) return partyAct;
+            const uintptr_t partyOwner = Player::GetOwner(index);
+            if (partyOwner >= kMinPointer) return partyOwner;
         }
 
         return 0;
