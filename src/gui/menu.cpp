@@ -120,10 +120,6 @@ namespace trinity::gui
         }
         changed |= ui::Toggle(LOC("Infinite Spirit"), &st.infSpirit,
                    LOC("Keeps your spirit / special ability gauge full."));
-        changed |= ui::Toggle(LOC("Easy Parry (Just Guard)"), &st.easyParry,
-                   LOC("Natively triggers Perfect Parry and deflect counters whenever you guard against enemy attacks."));
-        changed |= ui::Toggle(LOC("Easy Evade (Just Evade)"), &st.easyEvade,
-                   LOC("Natively triggers Perfect Dodge slow-motion counters whenever you dodge in combat."));
         if (ui::Toggle(LOC("No Bounty"), &st.noBounty,
                        LOC("Crimes stop adding to your bounty or alerting faction guards (session-only, safe for save files).")))
         {
