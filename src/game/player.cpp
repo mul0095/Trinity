@@ -963,6 +963,26 @@ namespace trinity::game
             LOG_OK("player: combat-timing hook installed @ %p", g_combatTimingTarget);
         }
 
+        // Native Just Core: secondary Perfect Parry / Perfect Dodge path.
+        // The hook target is removed in Player::Remove(), so install it here
+        // alongside the combat-timing hook and keep the alt prologue fallback.
+        if (mem::InstallHook("player: just-core", kSig_JustCore,
+                             "Easy Parry & Easy Evade Just Core path disabled",
+                             &hkJustCore, &oJustCore, &g_justCoreTarget))
+        {
+            LOG_OK("player: just-core hook installed @ %p", g_justCoreTarget);
+        }
+        else if (mem::InstallHook("player: just-core (alt)", kSig_JustCore_Alt,
+                                  "Easy Parry & Easy Evade Just Core path disabled",
+                                  &hkJustCore, &oJustCore, &g_justCoreTarget))
+        {
+            LOG_OK("player: just-core hook installed via alt @ %p", g_justCoreTarget);
+        }
+        else
+        {
+            LOG_WARN("player: just-core signature NOT FOUND (tried primary + alt) - secondary parry path disabled.");
+        }
+
         return true;
     }
 
