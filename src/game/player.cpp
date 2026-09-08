@@ -844,25 +844,17 @@ namespace trinity::game
         }
 
         // --- Combat Timing & Hitbox Evaluator: Perfect Parry & Perfect Dodge (sub_1407219c0) ---
-        using CombatTimingEval_t = bool(__fastcall*)(void* combatComp, void* hitData, float distance, uint32_t modeFlags, void* outResult);
+        using CombatTimingEval_t = bool(__fastcall*)(void* combatComp, void* hitData, float distance, uint8_t isGuardMode, void* outResult);
         CombatTimingEval_t oCombatTimingEval = nullptr;
         void* g_combatTimingTarget = nullptr;
 
-        bool __fastcall hkCombatTimingEval(void* combatComp, void* hitData, float distance, uint32_t modeFlags, void* outResult)
+        bool __fastcall hkCombatTimingEval(void* combatComp, void* hitData, float distance, uint8_t isGuardMode, void* outResult)
         {
-            static std::atomic<unsigned> s_timingDiagnostics{0};
-            const unsigned diagIndex = s_timingDiagnostics.fetch_add(1, std::memory_order_relaxed);
-            if (diagIndex < 24)
-            {
-                LOG_WARN("player: combat-timing diag[%u] mode=0x%08X comp=%p hit=%p out=%p dist=%.2f",
-                         diagIndex, modeFlags, combatComp, hitData,
-                         outResult, static_cast<double>(distance));
-            }
-            const bool orig = oCombatTimingEval ? oCombatTimingEval(combatComp, hitData, distance, modeFlags, outResult) : false;
+            const bool orig = oCombatTimingEval ? oCombatTimingEval(combatComp, hitData, distance, isGuardMode, outResult) : false;
             const State& st = State::Get();
 
             // isGuardMode != 0: Perfect Parry (Just Guard) -> ONLY when player is actively holding guard
-            if (modeFlags && st.easyParry && IsPlayerHoldingGuard())
+            if (isGuardMode && st.easyParry && IsPlayerHoldingGuard())
             {
                 if (outResult && reinterpret_cast<uintptr_t>(outResult) >= kMinPointer)
                 {
@@ -871,7 +863,7 @@ namespace trinity::game
                 return true;
             }
             // isGuardMode == 0: Perfect Dodge (Just Evade) -> ONLY when player is actively dodging
-            if (!modeFlags && st.easyEvade && IsPlayerHoldingEvade())
+            if (!isGuardMode && st.easyEvade && IsPlayerHoldingEvade())
             {
                 if (outResult && reinterpret_cast<uintptr_t>(outResult) >= kMinPointer)
                 {
