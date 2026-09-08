@@ -134,6 +134,8 @@ namespace trinity::game
         std::atomic<int>       g_mountCount{0};
         std::atomic<bool>      g_isRidingMount{false};
         std::atomic<uintptr_t> g_playerPossessor{0};
+        std::atomic<uint64_t>  g_characterTrackingRequestedUntilMs{0};
+        constexpr uint64_t     kCharacterTrackingDemandMs = 2000;
 
         // Stat commit (pa_StatCommit / IDB sub_BED7820) - the single funnel every
         // HP/Stamina/Spirit write passes through. God Mode, Infinite Stamina
@@ -451,6 +453,13 @@ namespace trinity::game
                 const uintptr_t owner = static_cast<uintptr_t>(ch);
                 uint64_t vt = 0;
                 if (!Read64(owner, &vt) || vt != anchorVt) continue;
+
+                uint64_t typeDesc = 0;
+                uint8_t typeTag = 0;
+                if (!Read64(owner + kOff_Owner_TypeDesc, &typeDesc) || typeDesc < kMinPointer ||
+                    !Read8(static_cast<uintptr_t>(typeDesc) + 1, &typeTag) ||
+                    !IsTrackedProtagonistTypeTag(typeTag))
+                    continue;
 
                 SelfChain c;
                 if (!WalkSelfChain(owner, &c)) continue;
@@ -954,13 +963,38 @@ namespace trinity::game
             LOG_OK("player: combat-timing hook installed @ %p", g_combatTimingTarget);
         }
 
+        // Native Just Core: secondary Perfect Parry / Perfect Dodge path.
+        // The hook target is removed in Player::Remove(), so install it here
+        // alongside the combat-timing hook and keep the alt prologue fallback.
+        if (mem::InstallHook("player: just-core", kSig_JustCore,
+                             "Easy Parry & Easy Evade Just Core path disabled",
+                             &hkJustCore, &oJustCore, &g_justCoreTarget))
+        {
+            LOG_OK("player: just-core hook installed @ %p", g_justCoreTarget);
+        }
+        else if (mem::InstallHook("player: just-core (alt)", kSig_JustCore_Alt,
+                                  "Easy Parry & Easy Evade Just Core path disabled",
+                                  &hkJustCore, &oJustCore, &g_justCoreTarget))
+        {
+            LOG_OK("player: just-core hook installed via alt @ %p", g_justCoreTarget);
+        }
+        else
+        {
+            LOG_WARN("player: just-core signature NOT FOUND (tried primary + alt) - secondary parry path disabled.");
+        }
+
         return true;
     }
 
     void Player::Tick()
     {
         const State& st = State::Get();
-        if (!AnyStatFeatureActive(st)) return;
+        const bool statFeatureActive = AnyStatFeatureActive(st);
+        const uint64_t now = GetTickCount64();
+        const uint64_t requestedUntil =
+            g_characterTrackingRequestedUntilMs.load(std::memory_order_acquire);
+        if (!ShouldRefreshTrackedCharacters(statFeatureActive, now, requestedUntil))
+            return;
 
         TickResolveSelf();
         if (st.infStamina || st.infMountStamina)
@@ -1046,6 +1080,10 @@ namespace trinity::game
 
     int Player::GetTrackedPlayerCount()
     {
+        const uint64_t now = GetTickCount64();
+        g_characterTrackingRequestedUntilMs.store(
+            now + kCharacterTrackingDemandMs, std::memory_order_release);
+
         int count = 0;
         for (int i = 0; i < kMaxPlayers; ++i)
         {
