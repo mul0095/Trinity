@@ -16,7 +16,6 @@
 #include "../game/teleport.h"
 #include "../game/inventory.h"
 #include "../game/world.h"
-#include "../game/dye.h"
 #include "../game/equipment.h"
 #include "../game/friendly.h"
 #if defined(TRINITY_EXTENDED)
@@ -53,7 +52,6 @@ namespace
             kSig_FieldTimeTick,
             kSig_TodEngineGlobal,
             kSig_WeatherRain,
-            kSig_DyeApplySlot,
             kSig_EquipEffectRefresh,
         };
 
@@ -130,7 +128,6 @@ namespace trinity
         game::Teleport::Install();  // Live position tracking / Fast Travel
         game::Inventory::Install(); // Item browser / quantity editor
         game::World::Install();     // Game Speed / Time of Day (Freeze, Advance)
-        game::Dye::Install();       // Armor dye / material / repair look
         game::Equipment::Install(); // Abyss-gear socket editor
         game::Friendly::Install();  // Trust Multiplier (gift/feed/tame)
 #if defined(TRINITY_EXTENDED)
@@ -157,7 +154,6 @@ namespace trinity
         game::Teleport::Remove();
         game::Inventory::Remove();
         game::World::Remove();
-        game::Dye::Remove();
         game::Equipment::Remove();
         game::Friendly::Remove();
 #if defined(TRINITY_EXTENDED)

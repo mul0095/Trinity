@@ -20,7 +20,7 @@
 #include "../game/inventory.h"
 #include "../game/world.h"
 #include "../game/dye.h"
-#include "../game/dye_data.h" // the game's dye families / preset shades (generated)
+#include "../game/dye_data.h" // legacy implementation retained out of startup/menu entry points
 #include "../game/equipment.h"
 #include "../game/friendly.h"
 #include "../game/item_names.h"
@@ -81,12 +81,6 @@ namespace trinity::gui
         ui::Begin(LOC("Mount & Horse Options"));
 
         bool changed = false;
-        if (ui::Submenu(LOC("Mount Equipment Dye"), "dyeslots",
-                    LOC("Recolor and customize equipment on your active horse or mount.")))
-        {
-            game::Dye::SetTargetMode(1);
-        }
-
         if (changed && st.autoSave)
             Settings::Save();
 
@@ -143,14 +137,6 @@ namespace trinity::gui
 
         ui::Submenu(LOC("Combat & Gameplay Options"), "combat_options",
                     LOC("One-Hit Kill, God Mode, Durability, and damage multipliers."));
-
-        if (ui::Submenu(LOC("Dye Equipment"), "dyeslots",
-                    game::Dye::Ready()
-                        ? LOC("Recolor your equipped gear.")
-                        : LOC("Recolor your equipped gear. Load into the world first.")))
-        {
-            game::Dye::SetTargetMode(0);
-        }
 
         ui::Submenu(LOC("Edit Equipment"), "equipslots",
                     game::Equipment::Ready()
@@ -3206,7 +3192,6 @@ namespace trinity::gui
         // A queued dye apply finishes on the game thread; report it wherever
         // the user is (the "Applying dye..." toast keeps this path drawing
         // even if they closed the menu right after).
-        ReportPendingDye();
 
         if (st.showFps)
             DrawFpsCounter();
@@ -3244,9 +3229,6 @@ namespace trinity::gui
         else if (!strcmp(cur, "loc_manage")) RenderSavedLocationManage();
         else if (!strcmp(cur, "ftcats"))   RenderFastTravelCats();
         else if (!strcmp(cur, "ftnodes"))  RenderFastTravelNodes();
-        else if (!strcmp(cur, "dyeslots"))  RenderDyeSlots();
-        else if (!strcmp(cur, "dyeedit"))   RenderDyeEdit();
-        else if (!strcmp(cur, "dyecustom")) RenderDyeCustom();
         else if (!strcmp(cur, "equipslots")) RenderEquipSlots();
         else if (!strcmp(cur, "equipedit"))  RenderEquipEdit();
         else if (!strcmp(cur, "equipgear"))  RenderEquipGear();

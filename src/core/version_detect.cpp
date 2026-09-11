@@ -54,8 +54,6 @@ namespace trinity::core
             // In-Memory Binary Fingerprinting:
             // Pearl Abyss keeps the PE resource version static (1.0.0.2474) across multiple Steam updates.
             // We inspect the live machine code signatures in game memory to determine the exact Title Update.
-            const bool hasModernDyeBatch = (mem::FindPattern(game::kSig_DyeApplyBatch) != 0);
-            const bool hasLegacyDyeBatch = (mem::FindPattern(game::kSig_DyeApplyBatch_Legacy) != 0);
 
             // TU 2.00.00+: the PE revision moves per title update
             // (1.0.0.2474 = TU 1.18.02, 1.0.0.2625 = TU 2.00.00,
@@ -66,18 +64,6 @@ namespace trinity::core
                 g_versionInfo.tu = GameTU::TU_1_18_01_Plus; // modern layout family
                 snprintf(g_versionInfo.displayStr, sizeof(g_versionInfo.displayStr),
                          "Crimson Desert %s (Active)", modernTU);
-            }
-            else if (hasModernDyeBatch)
-            {
-                g_versionInfo.tu = GameTU::TU_1_18_01_Plus;
-                snprintf(g_versionInfo.displayStr, sizeof(g_versionInfo.displayStr),
-                         "Crimson Desert 1.18.02 (Active)");
-            }
-            else if (hasLegacyDyeBatch)
-            {
-                g_versionInfo.tu = GameTU::TU_1_14;
-                snprintf(g_versionInfo.displayStr, sizeof(g_versionInfo.displayStr),
-                         "Crimson Desert 1.14 - 1.15 (Legacy Compatible)");
             }
             else
             {
