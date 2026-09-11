@@ -18,6 +18,7 @@
 #include "../mem/hooks.h"
 #include "../core/logger.h"
 #include "../core/state.h"
+#include "../core/version_mapping.h"
 #include "../core/version_detect.h"
 #include "player_logic.h"
 
@@ -323,31 +324,8 @@ namespace trinity::game
         {
             if (Teleport::IsProtected() || Teleport::GetFlightEngaged()) return true;
             return st.godMode || st.infStamina || st.infMountStamina || st.infSpirit ||
-                   st.oneHitKill || st.noFallDamage || st.easyParry || st.easyEvade ||
+                   st.oneHitKill || st.noFallDamage ||
                    st.dmgInMult != 1.0f || st.dmgOutMult != 1.0f;
-        }
-
-        static bool IsPlayerHoldingGuard()
-        {
-            if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 ||
-                (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 ||
-                (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0 ||
-                (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0 ||
-                (GetAsyncKeyState('Q') & 0x8000) != 0 ||
-                (GetAsyncKeyState('F') & 0x8000) != 0)
-                return true;
-
-            XINPUT_STATE xs{};
-            for (DWORD i = 0; i < 4; ++i)
-            {
-                if (XInputGetState(i, &xs) == ERROR_SUCCESS)
-                {
-                    if ((xs.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0 ||
-                        xs.Gamepad.bLeftTrigger > 30)
-                        return true;
-                }
-            }
-            return false;
         }
 
         static ULONGLONG s_lastResolveMs = 0;
@@ -773,14 +751,7 @@ namespace trinity::game
                 }
             }
 
-            if (st.easyParry && isPlayerTarget && isEnemyAttacker && IsPlayerHoldingGuard())
-            {
-                // Force Perfect Deflect / Parry: 0 damage, parry reaction flag (a6 = 2), attacker stagger (a7 = 1)
-                delta = 0;
-                a6 = 2;
-                a7 = 1;
-            }
-            else if (delta < 0)
+            if (delta < 0)
             {
                 if (statusId == StatType_Health || statusId == 0)
                 {
@@ -820,29 +791,6 @@ namespace trinity::game
                                 a6, a7, a8, a9, a10, out);
         }
 
-        static bool IsPlayerHoldingEvade()
-        {
-            if ((GetAsyncKeyState(VK_SPACE) & 0x8000) != 0 ||
-                (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
-                (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0 ||
-                (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
-                (GetAsyncKeyState('C') & 0x8000) != 0 ||
-                (GetAsyncKeyState(VK_MENU) & 0x8000) != 0) // Alt
-                return true;
-
-            XINPUT_STATE xs{};
-            for (DWORD i = 0; i < 4; ++i)
-            {
-                if (XInputGetState(i, &xs) == ERROR_SUCCESS)
-                {
-                    if ((xs.Gamepad.wButtons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B)) != 0 ||
-                        xs.Gamepad.bRightTrigger > 30)
-                        return true;
-                }
-            }
-            return false;
-        }
-
         // --- Combat Timing & Hitbox Evaluator: Perfect Parry & Perfect Dodge (sub_1407219c0) ---
         using CombatTimingEval_t = bool(__fastcall*)(void* combatComp, void* hitData, float distance, uint8_t isGuardMode, void* outResult);
         CombatTimingEval_t oCombatTimingEval = nullptr;
@@ -853,64 +801,9 @@ namespace trinity::game
             const bool orig = oCombatTimingEval ? oCombatTimingEval(combatComp, hitData, distance, isGuardMode, outResult) : false;
             const State& st = State::Get();
 
-            // isGuardMode != 0: Perfect Parry (Just Guard) -> ONLY when player is actively holding guard
-            if (isGuardMode && st.easyParry && IsPlayerHoldingGuard())
-            {
-                if (outResult && reinterpret_cast<uintptr_t>(outResult) >= kMinPointer)
-                {
-                    *reinterpret_cast<uint8_t*>(outResult) = 1;
-                }
-                return true;
-            }
-            // isGuardMode == 0: Perfect Dodge (Just Evade) -> ONLY when player is actively dodging
-            if (!isGuardMode && st.easyEvade && IsPlayerHoldingEvade())
-            {
-                if (outResult && reinterpret_cast<uintptr_t>(outResult) >= kMinPointer)
-                {
-                    *reinterpret_cast<uint8_t*>(outResult) = 1;
-                }
-                return true;
-            }
-
             return orig;
         }
 
-        // --- Just Core: Just Guard (Perfect Parry) & Just Evade (Perfect Dodge) ---
-        using JustCore_t = bool(__fastcall*)(__int64 a1, float* a2, float a3, char a4, bool* a5);
-        JustCore_t oJustCore = nullptr;
-        void*      g_justCoreTarget = nullptr;
-
-        bool __fastcall hkJustCore(__int64 a1, float* a2, float a3, char a4, bool* a5)
-        {
-            const bool orig = oJustCore ? oJustCore(a1, a2, a3, a4, a5) : false;
-            const State& st = State::Get();
-
-            // a4 != 0: Just Guard (Perfect Parry)
-            // a4 == 0: Just Evade (Perfect Dodge)
-            const bool isGuard = (a4 != 0);
-            const bool isEvade = (a4 == 0);
-
-            if ((isGuard && st.easyParry && IsPlayerHoldingGuard()) ||
-                (isEvade && st.easyEvade && IsPlayerHoldingEvade()))
-            {
-                if (a5) *a5 = true;
-                return true;
-            }
-
-            if (st.infStamina || st.infMountStamina)
-            {
-                for (int i = 0; i < kMaxStatEntries; ++i)
-                {
-                    PinEntry(g_stamEntries[i].load(std::memory_order_relaxed));
-                    PinEntry(g_mountStamEntries[i].load(std::memory_order_relaxed));
-                }
-            }
-            if (st.infSpirit)
-                for (int i = 0; i < kMaxStatEntries; ++i)
-                    PinEntry(g_spiritEntries[i].load(std::memory_order_relaxed));
-
-            return orig;
-        }
     }
 
     bool Player::Install()
@@ -925,9 +818,9 @@ namespace trinity::game
         // TU 2.01 removed the old single stat-commit funnel.  The resolved
         // character manager plus the per-frame entry pins are the current
         // guard on this build; do not search/hook a stale ABI.
-        if (core::GetGameVersion().revision == 2760)
+        if (core::UsesTu201CompatibleRevision(core::GetGameVersion().revision))
         {
-            LOG_OK("player: TU 2.01.00 continuous stat-pin guard active (all resolved characters).");
+            LOG_OK("player: modern continuous stat-pin guard active (all resolved characters).");
         }
         else
         {
@@ -961,26 +854,6 @@ namespace trinity::game
                              &hkCombatTimingEval, &oCombatTimingEval, &g_combatTimingTarget))
         {
             LOG_OK("player: combat-timing hook installed @ %p", g_combatTimingTarget);
-        }
-
-        // Native Just Core: secondary Perfect Parry / Perfect Dodge path.
-        // The hook target is removed in Player::Remove(), so install it here
-        // alongside the combat-timing hook and keep the alt prologue fallback.
-        if (mem::InstallHook("player: just-core", kSig_JustCore,
-                             "Easy Parry & Easy Evade Just Core path disabled",
-                             &hkJustCore, &oJustCore, &g_justCoreTarget))
-        {
-            LOG_OK("player: just-core hook installed @ %p", g_justCoreTarget);
-        }
-        else if (mem::InstallHook("player: just-core (alt)", kSig_JustCore_Alt,
-                                  "Easy Parry & Easy Evade Just Core path disabled",
-                                  &hkJustCore, &oJustCore, &g_justCoreTarget))
-        {
-            LOG_OK("player: just-core hook installed via alt @ %p", g_justCoreTarget);
-        }
-        else
-        {
-            LOG_WARN("player: just-core signature NOT FOUND (tried primary + alt) - secondary parry path disabled.");
         }
 
         return true;
@@ -1036,7 +909,6 @@ namespace trinity::game
         mem::RemoveHook(&g_commitTarget);
         mem::RemoveHook(&g_damageHookTarget);
         mem::RemoveHook(&g_combatTimingTarget);
-        mem::RemoveHook(&g_justCoreTarget);
         for (int i = 0; i < kMaxPlayers; ++i)
         {
             g_hpEntries[i].store(0);
