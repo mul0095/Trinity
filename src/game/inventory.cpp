@@ -2123,22 +2123,9 @@ namespace trinity::game
             g_capLockInit = true;
         }
 
-        // Capture both realms as soon as the engine asks for their inventory
-        // holder. Unlike the insert hook this can run during character load or
-        // a normal inventory open; failure simply leaves the existing direct
-        // resolver in place and Add Item remains fail-closed.
-        const GetHolder_t resolvedGetHolder = oGetHolder;
-        if (mem::InstallHook("inventory: holder observer", kSig_InvGetHolder,
-                             "server holder will be learned only from later transactions",
-                             &hkGetHolder, &oGetHolder, &g_holderTarget, 2))
-        {
-            LOG_OK("inventory: passive holder observer installed @ %p", g_holderTarget);
-        }
-        else
-        {
-            oGetHolder = resolvedGetHolder;
-            LOG_WARN("inventory: passive holder observer unavailable - waiting for an inventory transaction.");
-        }
+        // Note: We deliberately do NOT hook GetHolder passively: hooking it
+        // on high-frequency engine worker threads causes lock contention and
+        // concurrency interference. oGetHolder resolved above is called directly.
 
         // The game's own slot-expansion setter, HOOKED rather than just
         // resolved: the engine re-stamps every storage's VANILLA expansion
@@ -2896,6 +2883,9 @@ namespace trinity::game
                 uintptr_t def = 0;
                 if (!DefForRow(g_invTableGlobal, static_cast<uint16_t>(row), &def)) continue;
                 const uint16_t finalM = enable ? ((targetM > s_origTableMax[row]) ? targetM : s_origTableMax[row]) : s_origTableMax[row];
+                uint16_t curM = 0;
+                if (Read16(def + kOff_InvDef_MaxSlots, &curM) && curM == finalM)
+                    continue;
                 if (Write16(def + kOff_InvDef_MaxSlots, finalM))
                     any = true;
             }
