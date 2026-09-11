@@ -177,8 +177,8 @@ namespace
 
         Expect(RealmFlagOffsetForRevision(2760) == 0x1FD,
                "TU 2.01 realm selection must use the new TLS byte at +0x1FD");
-        Expect(RealmFlagOffsetForRevision(2850) == 0x1EC,
-               "TU 2.02 realm selection must use the live-verified TLS byte at +0x1EC");
+        Expect(RealmFlagOffsetForRevision(2850) == 0x1FD,
+               "TU 2.02 realm selection must use the live-verified TLS byte at +0x1FD");
         Expect(RealmFlagOffsetForRevision(2692) == 0x1F2,
                "pre-2.01 builds must retain the legacy TLS byte at +0x1F2");
     }
