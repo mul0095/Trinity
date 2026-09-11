@@ -39,9 +39,8 @@ namespace trinity::core
 
     uintptr_t RealmFlagOffsetForRevision(uint16_t revision)
     {
-        // PE 2850's live realm selector is `mov edx, 0x1EC` followed by
-        // `movzx eax, byte ptr [rdx+rcx]`; 0x1FD is a non-boolean byte there.
-        if (revision == 2850) return 0x1EC;
-        return revision == 2760 ? 0x1FD : 0x1F2;
+        // PE 2850's live realm selector at 0x14084F30D is `mov edx, 0x1fd` followed by
+        // `mov rax, gs:[0x58]; mov rcx, [rax]; cmp byte ptr [rdx+rcx], 0`.
+        return UsesTu201CompatibleRevision(revision) ? 0x1FD : 0x1F2;
     }
 }
