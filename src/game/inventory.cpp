@@ -16,6 +16,7 @@
 #include <MinHook.h>
 
 #include "offsets.h"
+#include "../core/crash_diagnostics.h"
 #include "crime_hook_contract.h"
 #include "inventory_hook_contract.h"
 #include "player.h"
@@ -247,6 +248,109 @@ namespace trinity::game
         int64_t g_stackAppliedVal = 0;
         bool    g_slotApplied     = false;
         int     g_slotAppliedVal  = 0;
+
+        uintptr_t g_pickupCapacityPatchTarget = 0;
+        bool      g_pickupCapacityPatchReady  = false;
+        bool      g_pickupCapacityPatchOn     = false;
+
+        bool SetPickupCapacityPatch(bool enabled)
+        {
+            if (!g_pickupCapacityPatchReady || !g_pickupCapacityPatchTarget)
+                return false;
+
+            core::CrashDiagnostics::Record(
+                core::diag::BreadcrumbKind::PatchState,
+                "patch.inventory.pickup-capacity",
+                g_pickupCapacityPatchTarget,
+                static_cast<uint32_t>(kInvPickupCapacityPatchSize),
+                enabled ? 1 : 0,
+                true);
+
+            uint8_t current[kInvPickupCapacityPatchSize] = {};
+            for (size_t i = 0; i < kInvPickupCapacityPatchSize; ++i)
+            {
+                if (!mem::Read8(g_pickupCapacityPatchTarget + i, &current[i]))
+                {
+                    core::CrashDiagnostics::Record(
+                        core::diag::BreadcrumbKind::PatchState,
+                        "patch.inventory.pickup-capacity",
+                        g_pickupCapacityPatchTarget,
+                        static_cast<uint32_t>(kInvPickupCapacityPatchSize),
+                        enabled ? 1 : 0,
+                        false);
+                    return false;
+                }
+            }
+
+            const auto from = enabled ? PickupCapacityPatchState::Original : PickupCapacityPatchState::Patched;
+            const auto to   = enabled ? PickupCapacityPatchState::Patched : PickupCapacityPatchState::Original;
+            const uint8_t* expected = enabled ? kInvPickupCapacityOriginal : kInvPickupCapacityEnabled;
+            const uint8_t* replacement = enabled ? kInvPickupCapacityEnabled : kInvPickupCapacityOriginal;
+            if (!CanTransitionPickupCapacityPatch(from, to, current, expected, kInvPickupCapacityPatchSize))
+            {
+                core::CrashDiagnostics::Record(
+                    core::diag::BreadcrumbKind::PatchState,
+                    "patch.inventory.pickup-capacity",
+                    g_pickupCapacityPatchTarget,
+                    static_cast<uint32_t>(kInvPickupCapacityPatchSize),
+                    enabled ? 1 : 0,
+                    false);
+                return false;
+            }
+            if (!mem::PatchMemory(g_pickupCapacityPatchTarget, replacement, kInvPickupCapacityPatchSize))
+            {
+                core::CrashDiagnostics::Record(
+                    core::diag::BreadcrumbKind::PatchState,
+                    "patch.inventory.pickup-capacity",
+                    g_pickupCapacityPatchTarget,
+                    static_cast<uint32_t>(kInvPickupCapacityPatchSize),
+                    enabled ? 1 : 0,
+                    false);
+                return false;
+            }
+
+            g_pickupCapacityPatchOn = enabled;
+            core::CrashDiagnostics::Record(
+                core::diag::BreadcrumbKind::PatchState,
+                "patch.inventory.pickup-capacity",
+                g_pickupCapacityPatchTarget,
+                static_cast<uint32_t>(kInvPickupCapacityPatchSize),
+                enabled ? 1 : 0,
+                true);
+            LOG_OK("inventory: PE 2949 Slot Size pickup branch %s [OK]", enabled ? "enabled" : "restored");
+            LOG_DEBUG("inventory: PE 2949 Slot Size pickup branch %s @ %p",
+                      enabled ? "enabled" : "restored", reinterpret_cast<void*>(g_pickupCapacityPatchTarget));
+            return true;
+        }
+
+        void InstallPickupCapacityPatch(uint16_t revision)
+        {
+            g_pickupCapacityPatchTarget = 0;
+            g_pickupCapacityPatchReady = false;
+            g_pickupCapacityPatchOn = false;
+            if (revision != 2949 && revision != 2976) return;
+
+            const auto matches = mem::FindAllMatches(kSig_InvPickupCapacity2949, 2);
+            if (matches.size() != 1)
+            {
+                LOG_WARN("inventory: PE 2949 Slot Size pickup signature expected one match, found %zu.", matches.size());
+                return;
+            }
+            g_pickupCapacityPatchTarget = matches[0] + 2;
+            uint8_t bytes[kInvPickupCapacityPatchSize] = {};
+            for (size_t i = 0; i < kInvPickupCapacityPatchSize; ++i)
+                if (!mem::Read8(g_pickupCapacityPatchTarget + i, &bytes[i])) return;
+            if (std::memcmp(bytes, kInvPickupCapacityOriginal, kInvPickupCapacityPatchSize) != 0)
+            {
+                LOG_WARN("inventory: PE 2949 Slot Size pickup branch has unexpected bytes; bypass unavailable.");
+                g_pickupCapacityPatchTarget = 0;
+                return;
+            }
+            g_pickupCapacityPatchReady = true;
+            LOG_OK("inventory: PE 2949 Slot Size pickup branch resolved [OK]");
+            LOG_DEBUG("inventory: PE 2949 Slot Size pickup branch resolved @ %p",
+                      reinterpret_cast<void*>(g_pickupCapacityPatchTarget));
+        }
 
         // Transaction guard: set while the engine's commit function is active.
         // All periodic container writes (RepairUsedSlots, SetAllSlotSizes, etc.)
@@ -1881,8 +1985,9 @@ namespace trinity::game
                             uintptr_t g = mem::ResolveRipAt(p, 7);
                             if (g >= kMinPointer)
                             {
-                                LOG_OK("inventory: table '%s' resolved via string-anchor -> %p",
-                                       name, reinterpret_cast<void*>(g));
+                                LOG_OK("inventory: table '%s' resolved via string anchor [OK]", name);
+                                LOG_DEBUG("inventory: table '%s' resolved via string anchor -> %p",
+                                          name, reinterpret_cast<void*>(g));
                                 return g;
                             }
                         }
@@ -1898,13 +2003,15 @@ namespace trinity::game
                 if (_stricmp(name, "WantedInfo") == 0)
                 {
                     uintptr_t g = gameBase + 0x6350EE8;
-                    LOG_OK("inventory: table 'WantedInfo' resolved via TU 2.00 fallback -> %p", reinterpret_cast<void*>(g));
+                    LOG_OK("inventory: table 'WantedInfo' resolved via TU 2.00 fallback [OK]");
+                    LOG_DEBUG("inventory: table 'WantedInfo' resolved via TU 2.00 fallback -> %p", reinterpret_cast<void*>(g));
                     return g;
                 }
                 if (_stricmp(name, "tribeinfo") == 0)
                 {
                     uintptr_t g = gameBase + 0x63307A8;
-                    LOG_OK("inventory: table 'tribeinfo' resolved via TU 2.00 fallback -> %p", reinterpret_cast<void*>(g));
+                    LOG_OK("inventory: table 'tribeinfo' resolved via TU 2.00 fallback [OK]");
+                    LOG_DEBUG("inventory: table 'tribeinfo' resolved via TU 2.00 fallback -> %p", reinterpret_cast<void*>(g));
                     return g;
                 }
             }
@@ -1940,8 +2047,9 @@ namespace trinity::game
                     g_grpTableGlobal = cand2;
                 if (g_grpTableGlobal)
                 {
-                    LOG_OK("inventory: table 'categorygroupinfo' resolved via fallback -> %p",
-                           reinterpret_cast<void*>(g_grpTableGlobal));
+                    LOG_OK("inventory: table 'categorygroupinfo' resolved via fallback [OK]");
+                    LOG_DEBUG("inventory: table 'categorygroupinfo' resolved via fallback -> %p",
+                              reinterpret_cast<void*>(g_grpTableGlobal));
                 }
             }
             if (!g_strTableGlobal)
@@ -2009,13 +2117,23 @@ namespace trinity::game
 
     bool Inventory::Install()
     {
+        const uint16_t revision = core::GetGameVersion().revision;
+
         mem::InstallHook("world: evaluate-wanted-state", kSig_EvaluateCrimeWantedState,
                          "Witnessed/Assault crime bypass disabled",
                          &hkEvaluateCrimeWantedState, &oEvaluateCrimeWantedState, &g_evalWantedTarget, 0);
 
-        mem::InstallHook("world: register-crime-event", kSig_RegisterCrimeEvent,
-                         "Crime event dispatch & UI banner bypass disabled",
-                         &hkRegisterCrimeEvent, &oRegisterCrimeEvent, &g_registerCrimeTarget, 0);
+        if (core::MayProbeLegacyCrimeEventDispatcherForRevision(revision))
+        {
+            mem::InstallHook("world: register-crime-event", kSig_RegisterCrimeEvent,
+                             "Crime event dispatch & UI banner bypass disabled",
+                             &hkRegisterCrimeEvent, &oRegisterCrimeEvent, &g_registerCrimeTarget, 0);
+        }
+        else
+        {
+            LOG("world: crime event dispatch bypass unavailable on PE %u; WantedInfo and wanted-state No Bounty remain active.",
+                revision);
+        }
 
         if (!mem::InstallHook("inventory: item-count accessor", kSig_InvGetItemQty, nullptr,
                               &hkGetItemQty, &oGetItemQty, &g_qtyTarget, 4))
@@ -2051,7 +2169,6 @@ namespace trinity::game
         // Item is refused, and every other inventory feature still works).
         // These are CALLED, not hooked. The insert planner is oHolderInsert,
         // resolved by the hook above - same function.
-        const uint16_t revision = core::GetGameVersion().revision;
         const bool usesTu201CompatibleAbi = core::UsesTu201CompatibleRevision(revision);
         const bool allowLegacyFuzzy = core::MayUseLegacyFuzzySignaturesForRevision(revision);
         static const char* kLegacyCtorSigs[] = {
@@ -2067,8 +2184,9 @@ namespace trinity::game
         if (currentCtor && currentMatches == 1)
         {
             oItemValueCtor = reinterpret_cast<ItemValueCtor_t>(currentCtor);
-            LOG_OK("inventory: TrItemValue modern native ctor resolved at %p",
-                   reinterpret_cast<void*>(currentCtor));
+            LOG_OK("inventory: TrItemValue constructor resolved [OK]");
+            LOG_DEBUG("inventory: TrItemValue constructor resolved at %p",
+                      reinterpret_cast<void*>(currentCtor));
         }
         else if (allowLegacyFuzzy)
         {
@@ -2079,8 +2197,9 @@ namespace trinity::game
                 if (addr && (matches == 1 || matches == 2))
                 {
                     oItemValueCtor = reinterpret_cast<ItemValueCtor_t>(addr);
-                    LOG_OK("inventory: TrItemValue legacy native ctor resolved at %p (matches=%zu)",
-                           reinterpret_cast<void*>(addr), matches);
+                    LOG_OK("inventory: legacy TrItemValue constructor resolved (matches=%zu) [OK]", matches);
+                    LOG_DEBUG("inventory: legacy TrItemValue constructor resolved at %p (matches=%zu)",
+                              reinterpret_cast<void*>(addr), matches);
                     break;
                 }
             }
@@ -2141,7 +2260,7 @@ namespace trinity::game
             // TU 2.01 removed the old five-argument setter ABI.  Apply the
             // complete bucket state every game tick instead; this updates the
             // expansion, delta, and derived-cap fields on both realms.
-            LOG_OK("inventory: modern continuous slot-expansion guard active.");
+            LOG_OK("inventory: continuous slot expansion guard active.");
         }
         else if (!mem::InstallHook("inventory: slot-expansion setter", kSig_InvSetExpandSlots,
                                    "Slot Size will not apply",
@@ -2151,7 +2270,7 @@ namespace trinity::game
             if (expandAddr)
             {
                 oSetExpandSlots = reinterpret_cast<SetExpandSlots_t>(expandAddr);
-                LOG_WARN("inventory: slot-expansion setter hook failed - Slot Size applies "
+                LOG_WARN("inventory: slot expansion setter hook failed - Slot Size applies "
                          "call-only and may briefly revert when the game recomputes it.");
             }
         }
@@ -2168,8 +2287,9 @@ namespace trinity::game
             if (mem::InstallHook("inventory: modern transaction commit", kSig_InvCommit,
                                  "quantity edits will not persist (revert on reconcile)",
                                  &hkCommit201, &oCommit201, &g_commit201Target, 2))
-                LOG_OK("inventory: modern transaction commit hook installed @ %p",
-                       g_commit201Target);
+                LOG_OK("inventory: transaction commit hook installed [OK]");
+                LOG_DEBUG("inventory: transaction commit hook installed @ %p",
+                          g_commit201Target);
         }
         else
         {
@@ -2182,7 +2302,10 @@ namespace trinity::game
         // Catches containers that only appear later (e.g. character swap).
         if (usesTu201CompatibleAbi)
         {
-            mem::InstallHook("inventory: modern holder-insert", kSig_InvHolderInsert201,
+            const char* holderInsertSig = (revision == 2944 || revision == 2949 || revision == 2976)
+                ? kSig_InvHolderInsert2944
+                : kSig_InvHolderInsert201;
+            mem::InstallHook("inventory: modern holder-insert", holderInsertSig,
                              "Add Item will be refused and server holder capture is limited",
                              &hkHolderInsert, &oHolderInsert, &g_insTarget, 2);
         }
@@ -2197,12 +2320,15 @@ namespace trinity::game
         const bool addItemReady = oItemValueCtor && oHolderInsert &&
             (oCommitPlacement || oCommitPlacement201) && oFreePlacements && oNtQueryInfoThread;
         if (addItemReady)
-            LOG_OK("inventory: native Add Item path ready (ctor=%p planner=%p commit=%p free=%p).",
-                   reinterpret_cast<void*>(oItemValueCtor), reinterpret_cast<void*>(oHolderInsert),
-                   reinterpret_cast<void*>(oCommitPlacement201 ?
-                       reinterpret_cast<uintptr_t>(oCommitPlacement201) :
-                       reinterpret_cast<uintptr_t>(oCommitPlacement)),
-                   reinterpret_cast<void*>(oFreePlacements));
+        {
+            LOG_OK("inventory: native Add Item path ready [OK]");
+            LOG_DEBUG("inventory: native Add Item path ready (ctor=%p planner=%p commit=%p free=%p)",
+                      reinterpret_cast<void*>(oItemValueCtor), reinterpret_cast<void*>(oHolderInsert),
+                      reinterpret_cast<void*>(oCommitPlacement201 ?
+                          reinterpret_cast<uintptr_t>(oCommitPlacement201) :
+                          reinterpret_cast<uintptr_t>(oCommitPlacement)),
+                      reinterpret_cast<void*>(oFreePlacements));
+        }
         else
             LOG_WARN("inventory: add-item path incomplete (ctor=%d planner=%d commit=%d free=%d teb=%d)"
                      " - Add Item will be refused.",
@@ -2238,11 +2364,27 @@ namespace trinity::game
         if (locGet)
             g_locMgrGlobal = mem::ResolveRipAt(locGet + kOff_LocGet_MovGlobal, 7);
 
+        core::CrashDiagnostics::Record(
+            core::diag::BreadcrumbKind::HookState,
+            "hook.inventory",
+            reinterpret_cast<std::uintptr_t>(g_qtyTarget),
+            5,
+            0,
+            true);
+
+        InstallPickupCapacityPatch(revision);
+
         return true;
     }
 
     void Inventory::Remove()
     {
+        if (g_pickupCapacityPatchOn && !SetPickupCapacityPatch(false))
+            LOG_WARN("inventory: PE 2949 Slot Size pickup branch could not be restored at shutdown.");
+        g_pickupCapacityPatchTarget = 0;
+        g_pickupCapacityPatchReady = false;
+        g_pickupCapacityPatchOn = false;
+
         // Leave the tables as vanilla found them on unload, same as World does
         // for Game Speed.
         if (g_stackApplied) { SetAllMaxStackSizes(false, 0); g_stackApplied = false; }
@@ -2538,6 +2680,7 @@ namespace trinity::game
 
     bool Inventory::SetAllMaxStackSizes(bool enable, int64_t value)
     {
+        core::CrashDiagnostics::MutationScope scope("inventory.stack-size");
         if (!g_itemTableGlobal) return false;
         uintptr_t table = 0;
         if (!ReadPtr(g_itemTableGlobal, &table)) return false;
@@ -2895,6 +3038,7 @@ namespace trinity::game
 
     bool Inventory::SetAllSlotSizes(bool enable, int value)
     {
+        core::CrashDiagnostics::MutationScope scope("inventory.slot-size");
         if (value < 1) value = 1;
         if (value > 700) value = 700;
         const uint16_t v = static_cast<uint16_t>(value);
@@ -3106,6 +3250,11 @@ namespace trinity::game
 
             // Slot caps live on bucket objects that a save load destroys and rebuilds.
             // SetAllSlotSizes skips buckets that already match, so re-driving it costs a u16 read per bucket.
+            if (g_pickupCapacityPatchReady && st.invSlotSize != g_pickupCapacityPatchOn)
+            {
+                SetPickupCapacityPatch(st.invSlotSize);
+            }
+
             if (st.invSlotSize && Player::Ready() && !g_commitActive.load(std::memory_order_acquire))
             {
                 static ULONGLONG s_lastSlotTick = 0;
@@ -3248,6 +3397,7 @@ namespace trinity::game
 
     bool Inventory::SetQuantity(int st, int cat, int idx, int64_t value)
     {
+        core::CrashDiagnostics::MutationScope scope("inventory.quantity");
         Item* ip = ItemAt(st, cat, idx);
         if (!ip) return false;
         if (value < 0) value = 0;
@@ -5004,6 +5154,8 @@ namespace trinity::game
 
     bool Inventory::AddItem(uint16_t typeId, int64_t qty)
     {
+        core::CrashDiagnostics::MutationScope scope("inventory.add-item");
+        core::CrashDiagnostics::Record(core::diag::BreadcrumbKind::Operation, "inventory.add-item.queued", typeId, static_cast<uint32_t>(qty), 0, true);
         if (qty < 1) return false;
         if (typeId == kInvSlot_EmptyType || typeId == 0) return false;
         uintptr_t def = 0;
@@ -5617,9 +5769,15 @@ namespace trinity::game
         {
             s_wantedLooked = true;
             s_wantedGlobal = FindTableGlobal(kStr_WantedInfoTable);
-            LOG(s_wantedGlobal ? "world: WantedInfo table @ %p - No Bounty available."
-                               : "world: WantedInfo table not found - bounty price left alone.",
-                reinterpret_cast<void*>(s_wantedGlobal));
+            if (s_wantedGlobal)
+            {
+                LOG_OK("world: WantedInfo table resolved - No Bounty available [OK]");
+                LOG_DEBUG("world: WantedInfo table @ %p - No Bounty available", reinterpret_cast<void*>(s_wantedGlobal));
+            }
+            else
+            {
+                LOG_WARN("world: WantedInfo table not found - bounty price left alone.");
+            }
         }
 
         int changed = 0;

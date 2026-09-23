@@ -1,5 +1,6 @@
 #include "equipment.h"
 #include "equipment_logic.h"
+#include "../core/crash_diagnostics.h"
 
 #include <Windows.h>
 #include <atomic>
@@ -1567,16 +1568,31 @@ namespace trinity::game
         if (!g_refresh)
             g_refresh = reinterpret_cast<EquipRefresh_t>(mem::FindPattern(kSig_EquipEffectRefresh_Legacy));
         if (g_refresh)
-            LOG("equipment: EquipEffectRefresh resolved @ %p.", reinterpret_cast<void*>(g_refresh));
+        {
+            LOG_OK("equipment: EquipEffectRefresh resolved [OK]");
+            LOG_DEBUG("equipment: EquipEffectRefresh resolved @ %p", reinterpret_cast<void*>(g_refresh));
+        }
         else
             LOG_WARN("equipment: EquipEffectRefresh signature not found.");
 
         g_resizeSocket = reinterpret_cast<ResizeSocketVector_t>(mem::FindPattern("48 89 74 24 10 57 48 83 EC 20 48 83 79 60 00"));
         if (g_resizeSocket)
-            LOG("equipment: native ResizeSocketVector resolved @ %p.", reinterpret_cast<void*>(g_resizeSocket));
+        {
+            LOG_OK("equipment: native ResizeSocketVector resolved [OK]");
+            LOG_DEBUG("equipment: native ResizeSocketVector resolved @ %p", reinterpret_cast<void*>(g_resizeSocket));
+        }
 
         // 1. Load Persistent Equipment Profiles from Disk (Trinity_EquipmentProfile.ini)
         LoadEquipProfilesFromDisk();
+
+        const bool ok = (g_refresh != nullptr);
+        core::CrashDiagnostics::Record(
+            core::diag::BreadcrumbKind::HookState,
+            "hook.equipment",
+            reinterpret_cast<std::uintptr_t>(g_refresh),
+            0,
+            0,
+            ok);
 
         return true;
     }
@@ -1650,6 +1666,7 @@ namespace trinity::game
     // --- Edits -------------------------------------------------------------
     bool Equipment::AddGear(uint16_t tag, int socketIdx, uint16_t gearTypeId, bool* persisted)
     {
+        core::CrashDiagnostics::MutationScope scope("equipment.modify");
         if (persisted) *persisted = false;
         if (socketIdx < 0 || socketIdx >= kMaxSockets || gearTypeId == kSock_Empty) return false;
 

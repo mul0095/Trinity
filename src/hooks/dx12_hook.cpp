@@ -17,6 +17,7 @@
 #include "../core/localization.h"
 #include "../core/settings.h"
 #include "../core/state.h"
+#include "../core/crash_diagnostics.h"
 #include "../game/player.h"
 #include "../game/teleport.h"
 #include "../gui/framework.h"
@@ -1177,7 +1178,8 @@ namespace trinity::hooks
         char path[MAX_PATH] = "?";
         if (m) GetModuleFileNameA(m, path, MAX_PATH);
         const char* base = strrchr(path, '\\');
-        LOG("%s @ %p in %s", what, addr, base ? base + 1 : path);
+        LOG("%s in %s", what, base ? base + 1 : path);
+        LOG_DEBUG("%s @ %p in %s", what, addr, base ? base + 1 : path);
     }
 
     // --- COM wrapper: draw the overlay before Streamline interpolates --------
@@ -1551,6 +1553,13 @@ namespace trinity::hooks
         if (!GetVTableAddresses(presentAddr, resizeAddr, execAddr, colorSpaceAddr))
         {
             LOG_ERR("Failed to resolve DX12 vtable addresses.");
+            core::CrashDiagnostics::Record(
+                core::diag::BreadcrumbKind::HookState,
+                "hook.dx12",
+                0,
+                0,
+                0,
+                false);
             return false;
         }
 
@@ -1585,6 +1594,15 @@ namespace trinity::hooks
         const char* exeName = strrchr(exePath, '\\');
         exeName = exeName ? exeName + 1 : exePath;
         LOG("DX12 hooks installed (%s, pid %lu).", exeName, GetCurrentProcessId());
+
+        core::CrashDiagnostics::Record(
+            core::diag::BreadcrumbKind::HookState,
+            "hook.dx12",
+            reinterpret_cast<std::uintptr_t>(presentAddr),
+            5,
+            0,
+            true);
+
         return true;
     }
 

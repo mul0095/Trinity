@@ -1,5 +1,6 @@
 #include "friendly.h"
 #include "friendly_logic.h"
+#include "../core/crash_diagnostics.h"
 
 #include <cstdint>
 #include <unordered_map>
@@ -150,6 +151,7 @@ namespace trinity::game
             s_lastTrustMap[cacheKey] = newValue;
             if (newValue == incoming) return;
 
+            core::CrashDiagnostics::MutationScope scope("friendly.trust");
             Write64(r + kOff_FriendlyRec_Value, static_cast<uint64_t>(newValue));
         }
 
@@ -250,7 +252,8 @@ namespace trinity::game
             if (CreateAndEnable(g_npcTarget, reinterpret_cast<void*>(&hkSetNpc),
                                 reinterpret_cast<void**>(&oSetNpc)))
             {
-                LOG_OK("friendly: NPC Trust Multiplier observer installed @ %p", g_npcTarget);
+                LOG_OK("friendly: NPC Trust Multiplier observer installed [OK]");
+                LOG_DEBUG("friendly: NPC Trust Multiplier observer installed @ %p", g_npcTarget);
                 g_hooksInstalled = true;
             }
             else g_npcTarget = nullptr;
@@ -262,7 +265,8 @@ namespace trinity::game
             if (CreateAndEnable(g_petTarget, reinterpret_cast<void*>(&hkSetPet),
                                 reinterpret_cast<void**>(&oSetPet)))
             {
-                LOG_OK("friendly: pet/mount Trust Multiplier observer installed @ %p", g_petTarget);
+                LOG_OK("friendly: pet/mount Trust Multiplier observer installed [OK]");
+                LOG_DEBUG("friendly: pet/mount Trust Multiplier observer installed @ %p", g_petTarget);
                 g_hooksInstalled = true;
             }
             else g_petTarget = nullptr;
@@ -276,7 +280,8 @@ namespace trinity::game
             if (CreateAndEnable(g_npcGetTarget, reinterpret_cast<void*>(&hkGetNpc),
                                 reinterpret_cast<void**>(&oGetNpc)))
             {
-                LOG_OK("friendly: NPC in-place trust observer installed @ %p", g_npcGetTarget);
+                LOG_OK("friendly: NPC in-place trust observer installed [OK]");
+                LOG_DEBUG("friendly: NPC in-place trust observer installed @ %p", g_npcGetTarget);
                 g_hooksInstalled = true;
             }
             else g_npcGetTarget = nullptr;
@@ -287,7 +292,8 @@ namespace trinity::game
             if (CreateAndEnable(g_petGetTarget, reinterpret_cast<void*>(&hkGetPet),
                                 reinterpret_cast<void**>(&oGetPet)))
             {
-                LOG_OK("friendly: pet/mount in-place trust observer installed @ %p", g_petGetTarget);
+                LOG_OK("friendly: pet/mount in-place trust observer installed [OK]");
+                LOG_DEBUG("friendly: pet/mount in-place trust observer installed @ %p", g_petGetTarget);
                 g_hooksInstalled = true;
             }
             else g_petGetTarget = nullptr;
@@ -296,6 +302,15 @@ namespace trinity::game
         g_hooksEnabled = g_hooksInstalled;
         if (!g_hooksInstalled)
             LOG_ERR("friendly: Trust Multiplier setters NOT FOUND - feature disabled.");
+
+        core::CrashDiagnostics::Record(
+            core::diag::BreadcrumbKind::HookState,
+            "hook.friendly",
+            reinterpret_cast<std::uintptr_t>(g_npcTarget ? g_npcTarget : g_petTarget),
+            5,
+            0,
+            g_hooksInstalled);
+
         return g_hooksInstalled;
     }
 

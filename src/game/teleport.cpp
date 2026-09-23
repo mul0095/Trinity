@@ -21,6 +21,7 @@
 #include <MinHook.h>
 
 #include "offsets.h"
+#include "../core/crash_diagnostics.h"
 #include "map_marker.h"
 #include "marker_teleport_logic.h"
 #include "player.h"
@@ -510,6 +511,7 @@ namespace trinity::game
             g_markerProtectFlag.store(0, std::memory_order_relaxed);
             g_protectionStartTime.store(0, std::memory_order_relaxed);
             g_markerCachedCandidate = -1;
+            g_markerOriginAddress = 0;
             g_markerDestinationGlobal = 0;
             for (auto& slot : g_markerCandidates)
             {
@@ -517,7 +519,11 @@ namespace trinity::game
                 slot.valid.store(0, std::memory_order_relaxed);
             }
 
-            const auto players = mem::FindAllMatches(kSig_MarkerPlayer, 2);
+            const uint16_t revision = core::GetGameVersion().revision;
+            const char* const markerPlayerSig = revision == 2976
+                ? kSig_MarkerPlayer_PE2976
+                : kSig_MarkerPlayer;
+            const auto players = mem::FindAllMatches(markerPlayerSig, 2);
             const auto markers = mem::FindAllMatches(kSig_MarkerPattern, 16);
             const auto origins = mem::FindAllMatches(kSig_MarkerOriginPrefix, 32);
             const auto protections = mem::FindAllMatches(kSig_MarkerProtection, 2);
@@ -527,10 +533,25 @@ namespace trinity::game
             if (destinationRefs.size() == 1)
                 g_markerDestinationGlobal = mem::ResolveRipAt(destinationRefs.front(), 7);
 
-            if (markers.size() != kExpected_MarkerMatches || origins.size() < 6)
+            // PE 2944 can resolve the active map destination directly from the
+            // UI state even when every older capture detour is unavailable.
+            // Keep those detours as a fallback only; do not let their failure
+            // hide a verified direct marker reader from the travel menu.
+            const bool hasDirectDestination = g_markerDestinationGlobal >= kMinPointer;
+            if (!hasDirectDestination)
             {
-                LOG_WARN("teleport: marker signatures count mismatch (markers=%zu exp=%zu, origins=%zu)",
-                         markers.size(), kExpected_MarkerMatches, origins.size());
+                LOG_WARN("teleport: direct map-destination reference not found; legacy capture hooks are required.");
+            }
+
+            if (markers.size() != kExpected_MarkerMatches)
+            {
+                LOG_WARN("teleport: marker capture signature count mismatch (markers=%zu exp=%zu); direct reader will be used when available.",
+                         markers.size(), kExpected_MarkerMatches);
+            }
+            if (origins.size() < 6)
+            {
+                LOG_WARN("teleport: marker origin signature count mismatch (origins=%zu); marker teleport disabled.",
+                         origins.size());
                 return false;
             }
 
@@ -571,32 +592,45 @@ namespace trinity::game
             }
 
             size_t installedHooks = 0;
-            for (size_t i = 0; i < markers.size(); ++i)
+            if (markers.size() == kExpected_MarkerMatches)
             {
-                if (InstallMarkerHook(markers[i] + 4, g_markerCandidates[i]))
+                for (size_t i = 0; i < markers.size(); ++i)
                 {
-                    ++installedHooks;
-                }
-                else
-                {
-                    LOG_WARN("teleport: marker hook index %zu skipped (best-effort).", i);
+                    if (InstallMarkerHook(markers[i] + 4, g_markerCandidates[i]))
+                    {
+                        ++installedHooks;
+                    }
+                    else
+                    {
+                        LOG_WARN("teleport: marker hook index %zu skipped (best-effort).", i);
+                    }
                 }
             }
 
             if (installedHooks == 0)
             {
-                LOG_WARN("teleport: no marker hooks could be installed.");
+                LOG_WARN("teleport: no marker hooks could be installed; using direct map destination when available.");
                 RemoveMarkerHooks();
-                return false;
             }
 
             if (protections.size() == 1)
                 g_markerProtectionReady = InstallMarkerProtectionHook(protections.front());
 
-            g_markerReady = true;
-            LOG_OK("teleport: map marker teleport subsystem initialized (origin=0x%p, hooks=%zu/%zu, protection=%s).",
-                   reinterpret_cast<void*>(g_markerOriginAddress), installedHooks, markers.size(),
-                   g_markerProtectionReady ? "yes" : "no");
+            g_markerReady = MarkerTeleportCanUseDestination(hasDirectDestination,
+                                                              g_markerOriginAddress >= kMinPointer,
+                                                              installedHooks);
+            if (!g_markerReady)
+            {
+                LOG_WARN("teleport: no usable marker source with a verified origin; marker teleport disabled.");
+                return false;
+            }
+
+            LOG_OK("teleport: map marker teleport subsystem initialized (direct=%s, hooks=%zu/%zu, protection=%s) [OK]",
+                   hasDirectDestination ? "yes" : "no",
+                   installedHooks, markers.size(), g_markerProtectionReady ? "yes" : "no");
+            LOG_DEBUG("teleport: map marker teleport subsystem initialized (origin=0x%p, direct=%s, hooks=%zu/%zu, protection=%s)",
+                      reinterpret_cast<void*>(g_markerOriginAddress), hasDirectDestination ? "yes" : "no",
+                      installedHooks, markers.size(), g_markerProtectionReady ? "yes" : "no");
             return true;
         }
 
@@ -625,7 +659,7 @@ namespace trinity::game
             return mem::ReadVec3(address, out);
         }
 
-        bool WriteTeleportPosition(void*, uintptr_t address, const MapMarkerPosition& value)
+        static bool RawWritePosition(uintptr_t address, const MapMarkerPosition& value)
         {
             __try
             {
@@ -636,6 +670,12 @@ namespace trinity::game
             {
                 return false;
             }
+        }
+
+        bool WriteTeleportPosition(void*, uintptr_t address, const MapMarkerPosition& value)
+        {
+            core::CrashDiagnostics::MutationScope scope("teleport.position");
+            return RawWritePosition(address, value);
         }
 
         bool ReadTeleportPosition(void*, uintptr_t address, MapMarkerPosition& value)
@@ -1188,6 +1228,7 @@ namespace trinity::game
             if (!ReadVec3(vel, v)) return;
             if (v[kIdx_MoveOwner_Up] <= kSuperJump_RiseThreshold) return;
 
+            core::CrashDiagnostics::MutationScope scope("player.movement");
             WriteFloat(vel + 4u * kIdx_MoveOwner_Up,
                        v[kIdx_MoveOwner_Up] * st.superJumpMult);
         }
@@ -1294,6 +1335,19 @@ namespace trinity::game
             return in;
         }
 
+        static void SafeLocoStep(uintptr_t comp, float dt, float* vel,
+                                 uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7)
+        {
+            __try
+            {
+                oLocoStep(comp, dt, vel, a4, a5, a6, a7);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                // Catch potential Havok physics engine exceptions at extreme coordinates/speeds
+            }
+        }
+
         void __fastcall hkLocoStep(uintptr_t comp, float dt, float* vel,
                                    uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7)
         {
@@ -1354,6 +1408,7 @@ namespace trinity::game
 
                 if (st.freeFlight)
                 {
+                    core::CrashDiagnostics::MutationScope flightScope("teleport.flight");
                     // Ascend input activates airborne flight mode
                     if (in.up)
                     {
@@ -1512,14 +1567,13 @@ namespace trinity::game
                 }
             }
 
-            __try
-            {
-                oLocoStep(comp, dt, vel, a4, a5, a6, a7);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                // Catch potential Havok physics engine exceptions at extreme coordinates/speeds
-            }
+            SafeLocoStep(comp, dt, vel, a4, a5, a6, a7);
+        }
+
+        static void SafeCallTravelFn(int scene, int index)
+        {
+            __try { g_travelFn(nullptr, scene, static_cast<unsigned int>(index)); }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
 
         uint64_t __fastcall hkMoveUpdate(uint64_t moveOwner, uint64_t a2, uint64_t a3, uint64_t a4,
@@ -1536,6 +1590,11 @@ namespace trinity::game
             // Super Jump scales the desired velocity before the integrator
             // reads it (+0xC0). (Super Run lives upstream, in hkLocoStep.)
             ApplyJumpScaling(owner);
+
+            if (State::Get().noClip)
+            {
+                core::CrashDiagnostics::MutationScope noclipScope("teleport.noclip");
+            }
 
             const uint64_t result = oMoveUpdate(moveOwner, a2, a3, a4, a5, a6, a7);
 
@@ -1620,8 +1679,7 @@ namespace trinity::game
                 g_pendValid.store(false, std::memory_order_release);
                 if (scene >= 0 && index >= 0)
                 {
-                    __try { g_travelFn(nullptr, scene, static_cast<unsigned int>(index)); }
-                    __except (EXCEPTION_EXECUTE_HANDLER) {}
+                    SafeCallTravelFn(scene, index);
                 }
             }
 
@@ -1771,28 +1829,61 @@ namespace trinity::game
     {
         if (!mem::InstallHook("teleport: movement-update", kSig_MoveUpdate, "position tracking disabled",
                               &hkMoveUpdate, &oMoveUpdate, &g_moveUpdateTarget))
-            return false;
-
-        // Resolve the fast-travel trigger + the destination registry global.
-        // Non-fatal if missing: position tracking still works, the fast-travel
-        // menu just stays empty (logged).
-        uintptr_t travel = mem::FindPattern(kSig_TravelToNode);
-        if (!travel)
-            travel = mem::FindPattern(kSig_TravelToNode_Pre201);
-        if (!travel)
-            travel = mem::FindPattern(kSig_TravelToNode_Legacy);
-
-        if (travel)
         {
-            g_travelFn = reinterpret_cast<TravelFn>(travel);
+            core::CrashDiagnostics::Record(
+                core::diag::BreadcrumbKind::HookState,
+                "hook.teleport",
+                0,
+                0,
+                0,
+                false);
+            return false;
+        }
+
+        const uint16_t revision = core::GetGameVersion().revision;
+        uintptr_t travel = 0;
+        if (revision == 2944 || revision == 2949 || revision == 2976)
+        {
+            const uintptr_t selectAddr = mem::FindPattern(kSig_TravelToNode_PE2944);
+            const uintptr_t dispatchAddr = mem::FindPattern(kSig_TravelDispatcher_PE2944);
+            if (selectAddr && dispatchAddr)
+            {
+                g_travelFn = reinterpret_cast<TravelFn>(dispatchAddr);
+                travel = dispatchAddr;
+                LOG_OK("teleport: native fast travel trigger resolved (PE 2944/2949/2976) [OK]");
+                LOG_DEBUG("teleport: PE 2944/2949/2976 selection @ %p, confirmation dispatcher @ %p",
+                          reinterpret_cast<void*>(selectAddr), reinterpret_cast<void*>(dispatchAddr));
+                LOG_DEBUG("teleport: native fast travel trigger resolved @ %p (PE 2944/2949/2976)",
+                          reinterpret_cast<void*>(dispatchAddr));
+            }
+            else
+            {
+                LOG_ERR("teleport: PE 2944/2949/2976 native Fast Travel contract incomplete (selection=%p dispatcher=%p) - menu disabled.",
+                        reinterpret_cast<void*>(selectAddr), reinterpret_cast<void*>(dispatchAddr));
+            }
         }
         else
         {
-            LOG_ERR("teleport: fast-travel trigger signature NOT FOUND - fast-travel menu disabled.");
+            travel = mem::FindPattern(kSig_TravelToNode);
+            if (!travel)
+                travel = mem::FindPattern(kSig_TravelToNode_Pre201);
+            if (!travel)
+                travel = mem::FindPattern(kSig_TravelToNode_Legacy);
+
+            if (travel)
+            {
+                g_travelFn = reinterpret_cast<TravelFn>(travel);
+                LOG_OK("teleport: native fast travel trigger resolved [OK]");
+                LOG_DEBUG("teleport: native fast travel trigger resolved @ %p", reinterpret_cast<void*>(travel));
+            }
+            else
+            {
+                LOG_ERR("teleport: fast travel trigger signature NOT FOUND - fast travel menu disabled.");
+            }
         }
 
         if (!ResolveTableResolver(kStr_GimmickSceneTable, &g_sceneResolver, &g_registryGlobal))
-            LOG_ERR("teleport: scene-registry resolver NOT FOUND - fast-travel menu disabled.");
+            LOG_ERR("teleport: scene registry resolver NOT FOUND - fast travel menu disabled.");
 
         // Named area boxes for waypoint labels (optional - degrades gracefully).
         if (!ResolveTableResolver(kStr_LevelNameTable, &g_lvlResolver, &g_lvlRegistryGlobal))
@@ -1817,6 +1908,14 @@ namespace trinity::game
 
         // Map Marker Teleport subsystem (clean-room marker capture from crimsondesert-main).
         InitMarkerSubsystem();
+
+        core::CrashDiagnostics::Record(
+            core::diag::BreadcrumbKind::HookState,
+            "hook.teleport",
+            reinterpret_cast<std::uintptr_t>(g_moveUpdateTarget),
+            5,
+            0,
+            true);
 
         return true;
     }

@@ -13,6 +13,7 @@
 #include "../mem/hooks.h"
 #include "../core/logger.h"
 #include "../core/state.h"
+#include "../core/crash_diagnostics.h"
 
 namespace trinity::game
 {
@@ -161,6 +162,7 @@ namespace trinity::game
         // always write both. Guarded per field.
         void WriteClockDayHour(int day, int hour)
         {
+            core::CrashDiagnostics::MutationScope scope("world.time");
             for (uintptr_t g : { g_timeClient, g_timeServer })
             {
                 if (!g) continue;
@@ -489,7 +491,8 @@ namespace trinity::game
                                   reinterpret_cast<void**>(&oFrameTimerUpdate)) == MH_OK &&
                     MH_EnableHook(g_frameTimerUpdateTarget) == MH_OK)
                 {
-                    LOG_OK("world: FrameTimerUpdate hook installed @ 0x%p (true game time scale engine control).", g_frameTimerUpdateTarget);
+                    LOG_OK("world: frame timer update hook installed (true game time scale engine control) [OK]");
+                    LOG_DEBUG("world: frame timer update hook installed @ 0x%p (true game time scale engine control)", g_frameTimerUpdateTarget);
                 }
                 else
                 {
@@ -592,7 +595,8 @@ namespace trinity::game
                 g_pEnvManager = mem::ResolveRipAt(envSig, kLen_EnvManager_Mov);
                 if (g_pEnvManager >= kMinPointer)
                 {
-                    LOG("world: safe EnvManager pointer resolved: 0x%llX", g_pEnvManager);
+                    LOG_OK("world: safe EnvManager pointer resolved [OK]");
+                    LOG_DEBUG("world: safe EnvManager pointer resolved: 0x%llX", g_pEnvManager);
                 }
                 else
                 {
@@ -600,6 +604,14 @@ namespace trinity::game
                 }
             }
         }
+
+        core::CrashDiagnostics::Record(
+            core::diag::BreadcrumbKind::HookState,
+            "hook.world",
+            reinterpret_cast<std::uintptr_t>(g_frameTimerUpdateTarget),
+            5,
+            0,
+            ok);
 
         return ok;
     }
@@ -895,6 +907,7 @@ namespace trinity::game
 
     bool World::SetWeatherPreset(int presetId)
     {
+        core::CrashDiagnostics::MutationScope scope("world.weather");
         State& st = State::Get();
         st.weatherPreset = presetId;
 

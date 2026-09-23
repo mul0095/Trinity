@@ -9,6 +9,7 @@
 #include "mod.h"
 #include "state.h"
 #include "localization.h"
+#include "crash_diagnostics.h"
 
 namespace trinity
 {
@@ -47,11 +48,17 @@ namespace trinity
     {
         char path[MAX_PATH];
         if (!IniPath(path, sizeof(path)))
+        {
+            core::CrashDiagnostics::PublishFeatureSnapshot(State::Get());
             return;
+        }
 
         FILE* f = fopen(path, "r");
         if (!f)
+        {
+            core::CrashDiagnostics::PublishFeatureSnapshot(State::Get());
             return; // first run - nothing saved yet
+        }
 
         // Parse onto a default-constructed State so missing/garbled keys keep
         // their defaults, then apply in one step below.
@@ -101,6 +108,7 @@ namespace trinity
             else if (!strcmp(key, "invSlotSizeVal"))      vals.invSlotSizeVal      = atoi(val);
             else if (!strcmp(key, "invStackSize"))        vals.invStackSize        = atoi(val) != 0;
             else if (!strcmp(key, "invStackSizeVal"))     vals.invStackSizeVal     = atoi(val);
+            else if (!strcmp(key, "workerMaxLevelAndSkills")) vals.workerMaxLevelAndSkills = atoi(val) != 0;
             else if (!strcmp(key, "forceClearSky"))       vals.forceClearSky       = atoi(val) != 0;
             else if (!strcmp(key, "rainIntensity"))       vals.rainIntensity       = strtof(val, nullptr);
             else if (!strcmp(key, "snowIntensity"))       vals.snowIntensity       = strtof(val, nullptr);
@@ -221,7 +229,10 @@ namespace trinity
             st.markerFallbackHeight = vals.markerFallbackHeight;
 
         if (!st.autoSave)
+        {
+            core::CrashDiagnostics::PublishFeatureSnapshot(st);
             return; // remembered the preference, but features start clean
+        }
 
         // Clamp the floats to the same ranges the menu rows enforce, in case
         // the file was hand-edited.
@@ -248,6 +259,7 @@ namespace trinity
         st.invSlotSizeVal  = ClampI(vals.invSlotSizeVal, 1, 700); // 240 vanilla / 700 modded cap
         st.invStackSize    = vals.invStackSize;
         st.invStackSizeVal = ClampI(vals.invStackSizeVal, 1, 999999999);
+        st.workerMaxLevelAndSkills = vals.workerMaxLevelAndSkills;
         st.showFps       = vals.showFps;
         st.showConsole   = vals.showConsole;
         st.menuScale     = ClampF(vals.menuScale, 0.5f, 2.5f);
@@ -259,6 +271,7 @@ namespace trinity
         loc::SetLanguageByCode(st.languageCode);
         st.languageIndex = loc::GetCurrentLanguageIndex();
 
+        core::CrashDiagnostics::PublishFeatureSnapshot(st);
         LOG_OK("Trinity.ini loaded - restored feature settings from last session.");
     }
 
@@ -327,6 +340,7 @@ namespace trinity
                 "invSlotSizeVal=%d\n"
                 "invStackSize=%d\n"
                 "invStackSizeVal=%d\n"
+                "workerMaxLevelAndSkills=%d\n"
                 "forceClearSky=%d\n"
                 "rainIntensity=%.3f\n"
                 "snowIntensity=%.3f\n"
@@ -390,6 +404,7 @@ namespace trinity
                 st.invSlotSizeVal,
                 st.invStackSize ? 1 : 0,
                 st.invStackSizeVal,
+                st.workerMaxLevelAndSkills ? 1 : 0,
                 st.forceClearSky ? 1 : 0,
                 st.rainIntensity,
                 st.snowIntensity,
@@ -474,6 +489,7 @@ namespace trinity
         st.invSlotSizeVal       = def.invSlotSizeVal;
         st.invStackSize         = def.invStackSize;
         st.invStackSizeVal      = def.invStackSizeVal;
+        st.workerMaxLevelAndSkills = def.workerMaxLevelAndSkills;
         st.showFps              = def.showFps;
     }
 
